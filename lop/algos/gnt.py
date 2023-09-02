@@ -7,7 +7,8 @@ from lop.utils.AdamGnT import AdamGnT
 
 class GnT(object):
     """
-    Generate-and-Test algorithm for feed forward neural networks, based on maturity-threshold based replacement
+    Generate-and-Test algorithm for feed forward neural networks, based on
+    maturity-threshold based replacement
     """
     def __init__(
             self,
@@ -26,7 +27,7 @@ class GnT(object):
         super(GnT, self).__init__()
         self.device = device
         self.net = net
-        self.num_hidden_layers = int(len(self.net)/2)
+        self.num_hidden_layers = int(len(self.net) / 2)
         self.loss_func = loss_func
         self.accumulate = accumulate
 
@@ -57,11 +58,13 @@ class GnT(object):
         """
         Calculate uniform distribution's bound for random feature initialization
         """
-        if hidden_activation == 'selu': init = 'lecun'
+        if hidden_activation == 'selu':
+            init = 'lecun'
         self.bounds = self.compute_bounds(hidden_activation=hidden_activation, init=init)
 
     def compute_bounds(self, hidden_activation, init='kaiming'):
-        if hidden_activation in ['swish', 'elu']: hidden_activation = 'relu'
+        if hidden_activation in ['swish', 'elu']:
+            hidden_activation = 'relu'
         if init == 'default':
             bounds = [sqrt(1 / self.net[i * 2].in_features) for i in range(self.num_hidden_layers)]
         elif init == 'xavier':
@@ -98,18 +101,18 @@ class GnT(object):
             elif self.util_type == 'contribution':
                 new_util = output_wight_mag * features.abs().mean(dim=0)
             elif self.util_type == 'adaptation':
-                new_util = 1/input_wight_mag
+                new_util = 1 / input_wight_mag
             elif self.util_type == 'zero_contribution':
                 new_util = output_wight_mag * (features - bias_corrected_act).abs().mean(dim=0)
             elif self.util_type == 'adaptable_contribution':
                 new_util = output_wight_mag * (features - bias_corrected_act).abs().mean(dim=0) / input_wight_mag
             elif self.util_type == 'feature_by_input':
-                input_wight_mag = self.net[layer_idx*2].weight.data.abs().mean(dim=1)
+                input_wight_mag = self.net[layer_idx * 2].weight.data.abs().mean(dim=1)
                 new_util = (features - bias_corrected_act).abs().mean(dim=0) / input_wight_mag
             else:
                 new_util = 0
 
-            self.util[layer_idx] -=- (1 - self.decay_rate) * new_util
+            self.util[layer_idx] -= -(1 - self.decay_rate) * new_util
 
             """
             Adam-style bias correction
@@ -142,7 +145,7 @@ class GnT(object):
             eligible_feature_indices = torch.where(self.ages[i] > self.maturity_threshold)[0]
             if eligible_feature_indices.shape[0] == 0:
                 continue
-            num_new_features_to_replace = self.replacement_rate*eligible_feature_indices.shape[0]
+            num_new_features_to_replace = self.replacement_rate * eligible_feature_indices.shape[0]
             self.accumulated_num_features_to_replace[i] += num_new_features_to_replace
 
             """
@@ -156,7 +159,7 @@ class GnT(object):
                     if torch.rand(1) <= num_new_features_to_replace:
                         num_new_features_to_replace = 1
                 num_new_features_to_replace = int(num_new_features_to_replace)
-    
+
             if num_new_features_to_replace == 0:
                 continue
 
@@ -190,19 +193,21 @@ class GnT(object):
                 next_layer = self.net[i * 2 + 2]
                 current_layer.weight.data[features_to_replace[i], :] *= 0.0
                 # noinspection PyArgumentList
-                current_layer.weight.data[features_to_replace[i], :] -=- \
+                current_layer.weight.data[features_to_replace[i], :] -= - (
                     torch.empty(num_features_to_replace[i], current_layer.in_features).uniform_(
                         -self.bounds[i], self.bounds[i]).to(self.device)
+                )
                 current_layer.bias.data[features_to_replace[i]] *= 0
                 """
                 # Update bias to correct for the removed features and set the outgoing weights and ages to zero
                 """
-                next_layer.bias.data -=- (next_layer.weight.data[:, features_to_replace[i]] * \
-                                                self.mean_feature_act[i][features_to_replace[i]] / \
-                                                (1 - self.decay_rate ** self.ages[i][features_to_replace[i]])).sum(dim=1)
+                next_layer.bias.data -= (
+                    -(next_layer.weight.data[:, features_to_replace[i]] *
+                      self.mean_feature_act[i][features_to_replace[i]] /
+                      (1 - self.decay_rate ** self.ages[i][features_to_replace[i]])).sum(dim=1)
+                )
                 next_layer.weight.data[:, features_to_replace[i]] = 0
                 self.ages[i][features_to_replace[i]] = 0
-
 
     def update_optim_params(self, features_to_replace, num_features_to_replace):
         """
