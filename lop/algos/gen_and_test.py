@@ -161,21 +161,29 @@ class GenerateAndTest(object):
             util_type='contribution',
             num_last_filter_outputs=4,
             accumulate=False,
+            verbose=1,
     ):
         super().__init__()
         self.device = device
         self.net = net
+        self.verbose = verbose
 
         self.meta = MetaNetwork(net)
+        if self.verbose:
+            print('Building meta network')
         self.meta._build()
-        self.meta.trace(input_data)
+        if self.verbose:
+            print('Tracing meta network')
+        self.meta.trace(input_data, verbose=self.verbose)
+        if self.verbose:
+            print('Finalizing meta network')
 
         self.accumulate = accumulate
         self.num_last_filter_outputs = num_last_filter_outputs
 
         self.opt = opt
         self.opt_type = 'sgd'
-        if isinstance(self.opt, AdamGnT):
+        if isinstance(self.opt, AdamGnT) or 'Adam' in self.opt.__class__.__name__:
             self.opt_type = 'adam'
 
         """
@@ -203,20 +211,20 @@ class GenerateAndTest(object):
             # differently.
 
             if isinstance(layer, Conv2d):
-                self.util[name] = torch.zeros(layer.out_channels)
-                self.bias_corrected_util[name] = torch.zeros(layer.out_channels)
-                self.ages[name] = torch.zeros(layer.out_channels)
-                self.mean_feature_act[name] = torch.zeros(layer.out_channels)
-                self.mean_abs_feature_act[name] = torch.zeros(
-                    layer.out_channels)
+                shape = layer.out_channels
+                self.util[name] = torch.zeros(shape, device=device)
+                self.bias_corrected_util[name] = torch.zeros(shape, device=device)
+                self.ages[name] = torch.zeros(shape, device=device)
+                self.mean_feature_act[name] = torch.zeros(shape, device=device)
+                self.mean_abs_feature_act[name] = torch.zeros(shape, device=device)
                 self.tracked_layer_names.append(name)
             elif isinstance(layer, Linear):
-                self.util[name] = torch.zeros(layer.out_features)
-                self.bias_corrected_util[name] = torch.zeros(layer.out_features)
-                self.ages[name] = torch.zeros(layer.out_features)
-                self.mean_feature_act[name] = torch.zeros(layer.out_features)
-                self.mean_abs_feature_act[name] = torch.zeros(
-                    layer.out_features)
+                shape = layer.out_features
+                self.util[name] = torch.zeros(shape, device=device)
+                self.bias_corrected_util[name] = torch.zeros(shape, device=device)
+                self.ages[name] = torch.zeros(shape, device=device)
+                self.mean_feature_act[name] = torch.zeros(shape, device=device)
+                self.mean_abs_feature_act[name] = torch.zeros(shape, device=device)
                 self.tracked_layer_names.append(name)
             self.accumulated_num_features_to_replace[name] = 0
 
@@ -284,6 +292,8 @@ class GenerateAndTest(object):
                         output_wight_mag = next_layer.weight.data.abs().mean(dim=0)
                     elif next_type == 'Conv2d':
                         output_wight_mag = next_layer.weight.data.abs().mean(dim=(0, 2, 3))
+                        if next_layer.groups > 1:
+                            output_wight_mag = output_wight_mag.repeat(next_layer.groups)
                     else:
                         raise NotImplementedError
 
@@ -294,32 +304,37 @@ class GenerateAndTest(object):
                         input_wight_mag = curr_layer.weight.data.abs().mean(dim=1)
                     elif curr_type == 'Conv2d':
                         input_wight_mag = curr_layer.weight.data.abs().mean(dim=(1, 2, 3))
+                        # if curr_layer.groups > 1:
+                        #     input_wight_mag = input_wight_mag.repeat(curr_layer.groups)
                     else:
                         raise AssertionError
 
-                    feature_abs = feature.abs()
-
+                    view_dims = None
                     if curr_type == 'Linear':
                         if feature.ndim == 2:
-                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=0)
-                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=0)
+                            feat_mean_dim = 0
                         elif feature.ndim == 3:
-                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 1))
-                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 1))
+                            feat_mean_dim = (0, 1)
                         elif feature.ndim == 4:
-                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 1, 2))
-                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 1, 2))
+                            feat_mean_dim = (0, 1, 2)
                         else:
                             raise AssertionError(feature.shape)
                     elif curr_type == 'Conv2d' and next_type == 'Conv2d':
-                        self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 2, 3))
-                        self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 2, 3))
+                        feat_mean_dim = (0, 2, 3)
                     elif curr_type == 'Conv2d' and next_type == 'Linear':
                         # FIXME: not general
-                        self.mean_feature_act[layer_name] -= -(preserve_rate * feature.mean(dim=0).view(-1, self.num_last_filter_outputs).mean(dim=1))
-                        self.mean_abs_feature_act[layer_name] -= -(preserve_rate * feature_abs.mean(dim=0).view(-1, self.num_last_filter_outputs).mean(dim=1))
+                        feat_mean_dim = 0
+                        view_dims = (-1, self.num_last_filter_outputs)
                     else:
                         raise AssertionError
+
+                    act_update = -preserve_rate * feature.mean(dim=feat_mean_dim)
+                    abs_act_update = -preserve_rate * feature.abs().mean(dim=feat_mean_dim)
+                    if view_dims is not None:
+                        act_update = act_update.view(*view_dims).mean(dim=1)
+                        abs_act_update = abs_act_update.view(*view_dims).mean(dim=1)
+                    self.mean_feature_act[layer_name] -= act_update
+                    self.mean_abs_feature_act[layer_name] -= abs_act_update
 
                     bias_corrected_act = self.mean_feature_act[layer_name] / bias_correction
 
@@ -374,6 +389,8 @@ class GenerateAndTest(object):
                         {self.util[layer_name].shape=}
                         e={e!r}
                     '''))
+                    import xdev
+                    xdev.embed()
                     raise
                 else:
                     ...
@@ -391,7 +408,7 @@ class GenerateAndTest(object):
         Returns:
             Features to replace in each layer, Number of features to replace in each layer
         """
-        features_to_replace = {n: torch.empty(0, dtype=torch.long).to(self.device)
+        features_to_replace = {n: torch.empty(0, dtype=torch.long, device=self.device)
                                for n in self.tracked_layer_names}
         features_to_replace_input_indices = {n: torch.empty(0, dtype=torch.long)
                                              for n in self.tracked_layer_names}
@@ -509,16 +526,33 @@ class GenerateAndTest(object):
 
                     in_feat_idx = features_to_replace_input_indices[layer_name]
                     out_feat_idx = features_to_replace_output_indices[layer_name]
-                    self.opt.state[layer.weight]['exp_avg'][in_feat_idx, :] = 0.0
-                    self.opt.state[layer.bias]['exp_avg'][in_feat_idx] = 0.0
-                    self.opt.state[layer.weight]['exp_avg_sq'][in_feat_idx, :] = 0.0
-                    self.opt.state[layer.bias]['exp_avg_sq'][in_feat_idx] = 0.0
-                    self.opt.state[layer.weight]['step'][in_feat_idx, :] = 0
-                    self.opt.state[layer.bias]['step'][in_feat_idx] = 0
-                    # output weights
-                    self.opt.state[next_layer.weight]['exp_avg'][:, out_feat_idx] = 0.0
-                    self.opt.state[next_layer.weight]['exp_avg_sq'][:, out_feat_idx] = 0.0
-                    self.opt.state[next_layer.weight]['step'][:, out_feat_idx] = 0
+
+                    curr_weight_state = self.opt.state[layer.weight]
+                    curr_bias_state = self.opt.state[layer.bias]
+                    next_weight_state = self.opt.state[next_layer.weight]
+
+                    import xdev
+                    with xdev.embed_on_exception_context:
+                        if 'exp_avg' in curr_weight_state:
+                            curr_weight_state['exp_avg'][in_feat_idx, :] = 0.0
+                        if 'exp_avg_sq' in curr_weight_state:
+                            curr_weight_state['exp_avg_sq'][in_feat_idx, :] = 0.0
+                        if 'step' in curr_weight_state:
+                            curr_weight_state['step'][in_feat_idx, ...] = 0
+
+                        if 'exp_avg' in curr_bias_state:
+                            curr_bias_state['exp_avg'][in_feat_idx, :] = 0.0
+                        if 'exp_avg_sq' in curr_bias_state:
+                            curr_bias_state['exp_avg_sq'][in_feat_idx, :] = 0.0
+                        if 'step' in curr_bias_state:
+                            curr_bias_state['step'][in_feat_idx, ...] = 0
+
+                        if 'exp_avg' in next_weight_state:
+                            next_weight_state['exp_avg'][:, out_feat_idx] = 0.0
+                        if 'exp_avg_sq' in next_weight_state:
+                            next_weight_state['exp_avg_sq'][:, out_feat_idx] = 0.0
+                        if 'step' in next_weight_state:
+                            next_weight_state['step'][:, out_feat_idx] = 0
 
     def gen_and_test(self):
         """
@@ -613,18 +647,12 @@ class MetaNetwork:
 
     def _register_layer_hooks(meta):
 
-        def make_layer_hook(name):
-            def record_hidden_activation(layer, input, output):
-                activation = output.detach()
-                meta.activation_cache[name] = activation
-            return record_hidden_activation
-
         for name, layer in meta.named_layers:
             layer._forward_hooks.clear
-            hook = make_layer_hook(name)
+            hook = RecordActivationHook(name, meta)
             layer.register_forward_hook(hook)
 
-    def trace(meta, input_data=None, input_shape=None):
+    def trace(meta, input_data=None, input_shape=None, verbose=1):
         """
         Requires an example input
         """
@@ -633,7 +661,11 @@ class MetaNetwork:
         import copy
 
         net = meta.net
+        if verbose:
+            print('deep copy network')
         net_copy = copy.deepcopy(net)
+        if verbose:
+            print('finish deep copy')
 
         id_to_names = defaultdict(list)
         for name, layer in list(model_layers(net_copy)):
@@ -787,6 +819,16 @@ class MetaNetwork:
                         # # print(path_labels)
                         # print(f'{curr_out_shape} -> {next_in_shape}')
                         yield next_layer_name, next_layer
+
+
+class RecordActivationHook:
+    def __init__(self, name, meta):
+        self.name = name
+        self.meta = meta
+
+    def __call__(self, layer, input, output):
+        activation = output.detach()
+        self.meta.activation_cache[self.name] = activation
 
 
 def patched_trace_graph(net_copy, input_data):
