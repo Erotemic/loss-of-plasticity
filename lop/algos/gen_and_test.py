@@ -133,6 +133,7 @@ class GenerateAndTest(object):
         >>>             print(tv_node)
         >>>             print('tv_node._show_name = {}'.format(ub.urepr(tv_node._show_name, nl=1)))
         >>> print('meta.tv_graph.edge_list = {}'.format(ub.urepr(meta.tv_graph.edge_list, nl=1)))
+        >>> meta.tv_graph.fill_visual_graph()
         >>> meta.tv_graph.visual_graph.render(format='png')
         >>> # Do a forward pass so activations are populated
         >>> for i in ub.ProgIter(range(100)):
