@@ -50,7 +50,7 @@ def test_complex():
         print('item_summary = {}'.format(ub.urepr(item_summary, nl=2)))
     print('(STEP 3): THE REST OF THE TEST')
     #self = MultimodalTransformer(arch_name='smt_it_joint_p8')
-    net = MultimodalTransformer(arch_name='smt_it_joint_p1',
+    net = MultimodalTransformer(arch_name='smt_it_stm_p8',
                                 dataset_stats=dataset_stats,
                                 classes=datamodule.classes,
                                 decoder='mlp', change_loss='dicefocal',
@@ -60,12 +60,23 @@ def test_complex():
     meta._build()
     input_data = batch[0:1]
     meta.trace(input_data=input_data)
+
+    for nx_node, node_data in meta.nx_graph.nodes(data=True):
+        if 'tv_compute_node' in node_data:
+            if 'layer_name' in node_data:
+                layer_name = node_data['layer_name']
+                tv_node = node_data['tv_compute_node']
+                tv_node._show_name = f'{layer_name}:{tv_node.name}'
+                print(tv_node)
+                print('tv_node._show_name = {}'.format(ub.urepr(tv_node._show_name, nl=1)))
+
+    print('meta.tv_graph.edge_list = {}'.format(ub.urepr(meta.tv_graph.edge_list, nl=1)))
     meta.tv_graph.visual_graph.render(format='png')
 
     ### DEV
     for layer_name in meta.layer_names:
-        next_name = list([t[0] for t in meta.next_layers(layer_name)])
-        print(f'connections {layer_name} -> {next_name}')
+        next_layer_name = list([t[0] for t in meta.next_layers(layer_name)])
+        print(f'connections {layer_name} -> {next_layer_name}')
 
     from torch.optim import AdamW
     opt = AdamW(net.parameters())
@@ -110,6 +121,19 @@ class GenerateAndTest(object):
         >>> #opt.zero_grad()
         >>> input_data = torch.rand(2, 3, 224, 224)
         >>> self = GenerateAndTest(net, hidden_activation, opt, input_data=input_data)
+        >>> meta = self.meta
+        >>> import networkx as nx
+        >>> nx.write_network_text(meta.nx_graph, vertical_chains=1)
+        >>> for nx_node, node_data in meta.nx_graph.nodes(data=True):
+        >>>     if 'tv_compute_node' in node_data:
+        >>>         if 'layer_name' in node_data:
+        >>>             layer_name = node_data['layer_name']
+        >>>             tv_node = node_data['tv_compute_node']
+        >>>             tv_node._show_name = f'{layer_name}:{tv_node.name}'
+        >>>             print(tv_node)
+        >>>             print('tv_node._show_name = {}'.format(ub.urepr(tv_node._show_name, nl=1)))
+        >>> print('meta.tv_graph.edge_list = {}'.format(ub.urepr(meta.tv_graph.edge_list, nl=1)))
+        >>> meta.tv_graph.visual_graph.render(format='png')
         >>> # Do a forward pass so activations are populated
         >>> for i in ub.ProgIter(range(100)):
         >>>     outputs = net(input_data)
@@ -249,8 +273,9 @@ class GenerateAndTest(object):
             curr_layer = self.meta.name_to_layer[layer_name]
             curr_type = self._layer_type(curr_layer)
 
-            for next_name, next_layer in self.meta.next_layers(layer_name):
+            for next_layer_name in self.meta.next_layer_names(layer_name):
                 # Not sure how to deal with multiple outputs here.
+                next_layer = self.meta.name_to_layer[next_layer_name]
 
                 next_type = self._layer_type(next_layer)
                 try:
@@ -271,15 +296,27 @@ class GenerateAndTest(object):
                     else:
                         raise AssertionError
 
+                    feature_abs = feature.abs()
+
                     if curr_type == 'Linear':
-                        self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=0)
-                        self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature.abs().mean(dim=0)
+                        if feature.ndim == 2:
+                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=0)
+                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=0)
+                        elif feature.ndim == 3:
+                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 1))
+                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 1))
+                        elif feature.ndim == 4:
+                            self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 1, 2))
+                            self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 1, 2))
+                        else:
+                            raise AssertionError(feature.shape)
                     elif curr_type == 'Conv2d' and next_type == 'Conv2d':
                         self.mean_feature_act[layer_name] -= -preserve_rate * feature.mean(dim=(0, 2, 3))
-                        self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature.abs().mean(dim=(0, 2, 3))
+                        self.mean_abs_feature_act[layer_name] -= -preserve_rate * feature_abs.mean(dim=(0, 2, 3))
                     elif curr_type == 'Conv2d' and next_type == 'Linear':
+                        # FIXME: not general
                         self.mean_feature_act[layer_name] -= -(preserve_rate * feature.mean(dim=0).view(-1, self.num_last_filter_outputs).mean(dim=1))
-                        self.mean_abs_feature_act[layer_name] -= -(preserve_rate * feature.abs().mean(dim=0).view(-1, self.num_last_filter_outputs).mean(dim=1))
+                        self.mean_abs_feature_act[layer_name] -= -(preserve_rate * feature_abs.mean(dim=0).view(-1, self.num_last_filter_outputs).mean(dim=1))
                     else:
                         raise AssertionError
 
@@ -298,7 +335,14 @@ class GenerateAndTest(object):
                                     self.num_last_filter_outputs).view(1, -1)
 
                         if curr_type == 'Linear' and next_type == 'Linear':
-                            new_util = output_wight_mag * (feature - bias_corrected_act).abs().mean(dim=0)
+                            if feature.ndim == 2:
+                                new_util = output_wight_mag * (feature - bias_corrected_act).abs().mean(dim=0)
+                            elif feature.ndim == 3:
+                                new_util = output_wight_mag * (feature - bias_corrected_act).abs().mean(dim=(0, 1))
+                            elif feature.ndim == 4:
+                                new_util = output_wight_mag * (feature - bias_corrected_act).abs().mean(dim=(0, 1, 2))
+                            else:
+                                raise AssertionError(feature.ndim)
                         elif curr_type == 'Conv2d' and next_type == 'Linear':
                             new_util = (output_wight_mag * (feature - bias_corrected_act).abs().mean(dim=0)).view(-1, self.num_last_filter_outputs).mean(dim=1)
                         elif next_type == 'Conv2d':
@@ -315,8 +359,29 @@ class GenerateAndTest(object):
                         self.bias_corrected_util[layer_name] = self.util[layer_name] / bias_correction
                 except Exception as ex:
                     e = ex
-                    print(f'warning: {layer_name} -> {next_name}, e={e}')
-                    # raise
+                    curr_nx_node = self.meta.name_to_nx_node[layer_name]
+                    next_nx_node = self.meta.name_to_nx_node[next_layer_name]
+                    curr_node_data = self.meta.nx_graph.nodes[curr_nx_node]
+                    next_node_data = self.meta.nx_graph.nodes[next_nx_node]
+                    print('curr_node_data = {}'.format(ub.urepr(curr_node_data, nl=1)))
+                    print('next_node_data = {}'.format(ub.urepr(next_node_data, nl=1)))
+                    # print(self.mean_feature_act[layer_name].shape)
+                    rich.print(ub.codeblock(
+                        f'''
+                        [red]bad: {layer_name} -> {next_layer_name},
+                        feature.shape={feature.shape}
+                        {self.util[layer_name].shape=}
+                        e={e!r}
+                    '''))
+                    raise
+                else:
+                    ...
+                    # rich.print(ub.codeblock(
+                    #     f'''
+                    #     [green]good: {layer_name} -> {next_layer_name},
+                    #     feature.shape={feature.shape}
+                    # '''))
+                    # # raise
 
     def test_features(self, features):
         """
@@ -348,58 +413,39 @@ class GenerateAndTest(object):
             eligible_feature_indices = torch.where(self.ages[layer_name] > self.maturity_threshold)[0]
             if eligible_feature_indices.shape[0] == 0:
                 continue
-            num_new_features_to_replace = self.replacement_rate * eligible_feature_indices.shape[0]
-            self.accumulated_num_features_to_replace[layer_name] += num_new_features_to_replace
+            new_num_replace = self.replacement_rate * eligible_feature_indices.shape[0]
+            self.accumulated_num_features_to_replace[layer_name] += new_num_replace
 
             """
             Case when the number of features to be replaced is between 0 and 1.
             """
             if self.accumulate:
-                num_new_features_to_replace = int(self.accumulated_num_features_to_replace[layer_name])
-                self.accumulated_num_features_to_replace[layer_name] -= num_new_features_to_replace
+                new_num_replace = int(self.accumulated_num_features_to_replace[layer_name])
+                self.accumulated_num_features_to_replace[layer_name] -= new_num_replace
             else:
-                if num_new_features_to_replace < 1:
-                    if torch.rand(1) <= num_new_features_to_replace:
-                        num_new_features_to_replace = 1
-                num_new_features_to_replace = int(num_new_features_to_replace)
+                if new_num_replace < 1:
+                    if torch.rand(1) <= new_num_replace:
+                        new_num_replace = 1
+                new_num_replace = int(new_num_replace)
 
-            if num_new_features_to_replace == 0:
+            if new_num_replace == 0:
                 continue
 
             """
             Find features to replace in the current layer
             """
-            try:
-                layer_bias_correction = self.bias_corrected_util[layer_name]
-                _tmp = -layer_bias_correction[eligible_feature_indices]
-                new_features_to_replace = torch.topk(_tmp, num_new_features_to_replace)[1]
-                new_features_to_replace = eligible_feature_indices[new_features_to_replace]
-            except Exception as ex:  # NOQA
-                raise
-                # rich.print('\n' + ub.codeblock(
-                #     f'''
-                #     [red]fixme {layer_name} with feature.shape={feature.shape},
-                #     num_new_features_to_replace={num_new_features_to_replace},
-                #     eligible_feature_indices={eligible_feature_indices.shape}
-                #     layer_bias_correction.shape={layer_bias_correction.shape}
-                #     ex={ex!r}
-                #     '''))
-            else:
-                """
-                Initialize utility for new features
-                """
-                # rich.print('\n' + ub.codeblock(
-                #     f'''
-                #     [green]good {layer_name} with feature.shape={feature.shape},
-                #     num_new_features_to_replace={num_new_features_to_replace},
-                #     eligible_feature_indices={eligible_feature_indices.shape}
-                #     layer_bias_correction.shape={layer_bias_correction.shape}
-                #     '''))
-                self.util[layer_name][new_features_to_replace] = 0
-                self.mean_feature_act[layer_name][new_features_to_replace] = 0.
+            layer_bias_correction = self.bias_corrected_util[layer_name]
+            _tmp = -layer_bias_correction[eligible_feature_indices]
+            _new_replace_idxs = torch.topk(_tmp, new_num_replace)[1]
+            new_replace_idxs = eligible_feature_indices[_new_replace_idxs]
+            """
+            Initialize utility for new features
+            """
+            self.util[layer_name][new_replace_idxs] = 0
+            self.mean_feature_act[layer_name][new_replace_idxs] = 0.
 
-                features_to_replace[layer_name] = new_features_to_replace
-                num_features_to_replace[layer_name] = num_new_features_to_replace
+            features_to_replace[layer_name] = new_replace_idxs
+            num_features_to_replace[layer_name] = new_num_replace
 
         return features_to_replace_input_indices, features_to_replace_output_indices, num_features_to_replace
 
@@ -440,7 +486,8 @@ class GenerateAndTest(object):
                 self.ages[layer_name][in_feat_idx] = 0
 
                 # Set the outgoing weights to zero
-                for next_name, next_layer in self.meta.next_layers(layer_name):
+                for next_layer_name in self.meta.next_layer_names(layer_name):
+                    next_layer = self.meta.name_to_layer[next_layer_name]
                     next_layer.weight.data[:, out_feat_idx] = 0
 
     def update_optim_params(self, features_to_replace_input_indices, features_to_replace_output_indices, num_features_to_replace):
@@ -456,7 +503,8 @@ class GenerateAndTest(object):
 
                 layer = self.meta.name_to_layer[layer_name]
 
-                for next_name, next_layer in self.meta.next_layers(layer_name):
+                for next_layer_name in self.meta.next_layer_names(layer_name):
+                    next_layer = self.meta.name_to_layer[next_layer_name]
 
                     in_feat_idx = features_to_replace_input_indices[layer_name]
                     out_feat_idx = features_to_replace_output_indices[layer_name]
@@ -599,8 +647,8 @@ class MetaNetwork:
             parts = []
             if 'layer_name' in data:
                 parts.append(data['layer_name'] + ':')
-            if 'compute_node' in data:
-                n = data['compute_node']
+            if 'tv_compute_node' in data:
+                n = data['tv_compute_node']
                 parts.append(n.name)
             else:
                 parts.append(n_id_str)
@@ -623,24 +671,24 @@ class MetaNetwork:
             tv_u_id = id(tv_u)
             tv_v_id = id(tv_v)
             nx_graph.add_edge(tv_u_id, tv_v_id)
-            nx_graph.nodes[tv_u_id]['compute_node'] = tv_u
-            nx_graph.nodes[tv_v_id]['compute_node'] = tv_v
+            nx_graph.nodes[tv_u_id]['tv_compute_node'] = tv_u
+            nx_graph.nodes[tv_v_id]['tv_compute_node'] = tv_v
 
-        name_to_n_id = {}
+        name_to_nx_node = {}
 
         # Enrich each node with more info
-        for n_id, data in nx_graph.nodes(data=True):
-            if 'compute_node' in data:
-                tv_node = data['compute_node']
+        for nx_node, data in nx_graph.nodes(data=True):
+            if 'tv_compute_node' in data:
+                tv_node = data['tv_compute_node']
                 if hasattr(tv_node, 'compute_unit_id'):
                     if tv_node.compute_unit_id in id_to_names:
                         layer_names = id_to_names[tv_node.compute_unit_id]
                         if len(layer_names) == 1:
                             layer_name = data['layer_name'] = layer_names[0]
-                            name_to_n_id[layer_name] = n_id
+                            name_to_nx_node[layer_name] = nx_node
                         else:
                             data['layer_names'] = layer_names[0]
-            data['label'] = make_label(n_id, data)
+            data['label'] = make_label(nx_node, data)
 
         # Not sure what the rando singleton node is.
         if len(nx_graph.nodes) > 1:
@@ -662,16 +710,31 @@ class MetaNetwork:
         import ubelt as ub
         topo_order = ub.OrderedSet(nx.topological_sort(nx_graph))
         meta.named_topo_order = (topo_order & named_ids)
-        meta.name_to_n_id = name_to_n_id
+        meta.name_to_nx_node = name_to_nx_node
         meta.tv_graph = tv_graph
 
         # import netharn as nh
+
+        # Build fast lookup for next layers
         meta.layer_dependencies = ub.ddict(list)
         for layer_name in meta.layer_names:
             next_names = list([t[0] for t in meta.next_layers(layer_name)])
             meta.layer_dependencies[layer_name].extend(next_names)
+            if layer_name in meta.name_to_nx_node:
+                nx_node = meta.name_to_nx_node[layer_name]
+                node_data = meta.nx_graph.nodes[nx_node]
+                if 'tv_compute_node' in node_data:
+                    tv_node = node_data['tv_compute_node']
+                    out_shape = tv_node.output_shape
+                    in_shape = tv_node.input_shape
+                    node_data['in_shape'] = in_shape
+                    node_data['out_shape'] = out_shape
+                node_data['next_names'] = next_names
 
         # tv_graph.visual_graph.view()
+
+    def next_layer_names(meta, layer_name):
+        return meta.layer_dependencies[layer_name]
 
     def next_layers(meta, layer_name):
         """
@@ -684,25 +747,25 @@ class MetaNetwork:
         """
         import networkx as nx
         curr_name = layer_name
-        if curr_name in meta.name_to_n_id:
-            curr_nx_node = meta.name_to_n_id[curr_name]
+        if curr_name in meta.name_to_nx_node:
+            curr_nx_node = meta.name_to_nx_node[curr_name]
 
-            node_data = meta.nx_graph.nodes[curr_nx_node]
-            if 'compute_node' in node_data:
-                tv_node = node_data['compute_node']
+            curr_node_data = meta.nx_graph.nodes[curr_nx_node]
+            if 'tv_compute_node' in curr_node_data:
+                curr_tv_node = curr_node_data['tv_compute_node']
                 # curr_in_shape = n.input_shape
-                curr_out_shape = tv_node.output_shape
+                curr_out_shape = curr_tv_node.output_shape
 
             named_descendants = meta.named_topo_order & nx.descendants(meta.nx_graph, curr_nx_node)
             for next_nx_node in named_descendants:
-                next_name = meta.nx_graph.nodes[next_nx_node]['layer_name']
-                next_layer = meta.name_to_layer[next_name]
+                next_layer_name = meta.nx_graph.nodes[next_nx_node]['layer_name']
+                next_layer = meta.name_to_layer[next_layer_name]
                 flag = 0
                 if isinstance(next_layer, KNOWN_LAYERS):
                     next_node_data = meta.nx_graph.nodes[next_nx_node]
-                    if 'compute_node' in next_node_data:
+                    if 'tv_compute_node' in next_node_data:
                         path = nx.shortest_path(meta.nx_graph, curr_nx_node, next_nx_node)
-                        next_tv_node = next_node_data['compute_node']
+                        next_tv_node = next_node_data['tv_compute_node']
                         next_in_shape = next_tv_node.input_shape
                         between = path[1:-1]
                         between_datas = [meta.nx_graph.nodes[_n] for _n in between]
@@ -716,13 +779,13 @@ class MetaNetwork:
                             if (next_in_shape) == curr_out_shape:
                                 flag = 1
                     if flag:
-                        # print(f'{curr_name} -> {next_name}')
+                        # print(f'{curr_name} -> {next_layer_name}')
                         # print(between_named)
                         # # named_path_datas = [meta.nx_graph.nodes[_n] for _n in path]
                         # # path_labels = [d['label'] for d in named_path_datas]
                         # # print(path_labels)
                         # print(f'{curr_out_shape} -> {next_in_shape}')
-                        yield next_name, next_layer
+                        yield next_layer_name, next_layer
 
 
 def patched_trace_graph(net_copy, input_data):
@@ -830,13 +893,13 @@ def patched_trace_graph(net_copy, input_data):
             with recorder:
                 with torch.no_grad():
                     try:
-                        _ = model.to(device)(x)
-                    except Exception:
                         kwargs = {}
                         if isinstance(x, (list, tuple)):
                             _ = model.to(device)(*x, **kwargs)
                         elif isinstance(x, Mapping):
                             _ = model.to(device)(**x, **kwargs)
+                    except Exception:
+                        _ = model.to(device)(x)
         except Exception as e:
             raise RuntimeError(
                 "Failed to run torchgraph see error message"
