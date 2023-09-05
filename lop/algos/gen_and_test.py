@@ -485,17 +485,14 @@ class GenerateAndTest(object):
                 bound = self.bounds[layer_name]
 
                 if isinstance(curr_layer, Linear):
-                    curr_layer.weight.data[in_feat_idx, :] *= 0.0
-                    curr_layer.weight.data[in_feat_idx, :] -= -(
-                        torch.empty(num, curr_layer.in_features).uniform_(
-                            -bound, bound).to(self.device))
+                    _shape = [num, curr_layer.in_features]
                 elif isinstance(curr_layer, Conv2d):
                     _shape = [num] + list(curr_layer.weight.shape[1:])
-                    curr_layer.weight.data[in_feat_idx, :] *= 0.0
-                    curr_layer.weight.data[in_feat_idx, :] -= -(
-                        torch.empty(_shape).uniform_(-bound, bound))
                 else:
                     raise AssertionError('should be linear or conv2d for now')
+                curr_layer.weight.data[in_feat_idx, :] *= 0.0
+                curr_layer.weight.data[in_feat_idx, :] -= -(
+                    torch.empty(_shape, device=self.device).uniform_(-bound, bound))
 
                 if curr_layer.bias is not None:
                     curr_layer.bias.data[in_feat_idx] *= 0.0
@@ -538,21 +535,30 @@ class GenerateAndTest(object):
                         if 'exp_avg_sq' in curr_weight_state:
                             curr_weight_state['exp_avg_sq'][in_feat_idx, :] = 0.0
                         if 'step' in curr_weight_state:
-                            curr_weight_state['step'][in_feat_idx, ...] = 0
+                            try:
+                                curr_weight_state['step'][in_feat_idx] = 0
+                            except Exception:
+                                curr_weight_state['step'].zero_()
 
                         if 'exp_avg' in curr_bias_state:
-                            curr_bias_state['exp_avg'][in_feat_idx, :] = 0.0
+                            curr_bias_state['exp_avg'][in_feat_idx] = 0.0
                         if 'exp_avg_sq' in curr_bias_state:
-                            curr_bias_state['exp_avg_sq'][in_feat_idx, :] = 0.0
+                            curr_bias_state['exp_avg_sq'][in_feat_idx] = 0.0
                         if 'step' in curr_bias_state:
-                            curr_bias_state['step'][in_feat_idx, ...] = 0
+                            try:
+                                curr_bias_state['step'][in_feat_idx] = 0
+                            except Exception:
+                                curr_bias_state['step'].zero_()
 
                         if 'exp_avg' in next_weight_state:
                             next_weight_state['exp_avg'][:, out_feat_idx] = 0.0
                         if 'exp_avg_sq' in next_weight_state:
                             next_weight_state['exp_avg_sq'][:, out_feat_idx] = 0.0
                         if 'step' in next_weight_state:
-                            next_weight_state['step'][:, out_feat_idx] = 0
+                            try:
+                                next_weight_state['step'][:, out_feat_idx] = 0
+                            except Exception:
+                                next_weight_state['step'].zero_()
 
     def gen_and_test(self):
         """
