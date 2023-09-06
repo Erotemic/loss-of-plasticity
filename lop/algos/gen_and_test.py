@@ -31,6 +31,13 @@ KNOWN_LAYERS = (torch.nn.Linear, torch.nn.Conv2d)
 
 
 def test_complex():
+    """
+    Ignore:
+        import sys, ubelt
+        sys.path.append(ubelt.expandpath('~/code/watch/geowatch_tpl/submodules/torchview'))
+        sys.path.append(ubelt.expandpath('~/code/watch/geowatch_tpl/submodules/loss-of-plasticity'))
+        from lop.algos.gen_and_test import *  # NOQA
+    """
     from watch.tasks.fusion.methods.channelwise_transformer import MultimodalTransformer
     from watch.tasks.fusion import datamodules
     print('(STEP 0): SETUP THE DATA MODULE')
@@ -74,9 +81,34 @@ def test_complex():
     meta.tv_graph.visual_graph.render(format='png')
 
     ### DEV
+    found_connections = []
+    missing_connections = []
     for layer_name in meta.layer_names:
         next_layer_name = list([t[0] for t in meta.next_layers(layer_name)])
         print(f'connections {layer_name} -> {next_layer_name}')
+        if len(next_layer_name):
+            found_connections.append(layer_name)
+        else:
+            missing_connections.append(layer_name)
+
+    missing_connections
+
+    for nx_node, node_data in meta.nx_graph.nodes(data=True):
+        if 'layer_name' in node_data:
+            layer_name = node_data['layer_name']
+            if layer_name in found_connections:
+                node_data['label'] = '[green]' + node_data['label'] + '[\\green]'
+            elif layer_name in missing_connections:
+                node_data['label'] = '[red]' + node_data['label'] + '[\\red]'
+            else:
+                ...
+
+    import networkx as nx
+    nx.write_network_text(meta.nx_graph, rich.print, vertical_chains=1, end='')
+
+    for name in missing_connections:
+        layer = meta.name_to_layer[name]
+        print(f'{name} {layer}')
 
     from torch.optim import AdamW
     opt = AdamW(net.parameters())
