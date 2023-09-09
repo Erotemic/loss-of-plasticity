@@ -42,3 +42,18 @@ class ConvNet(nn.Module):
         x5 = self.layers[9](self.layers[8](x4))
         x6 = self.layers[10](x5)
         return x6, [x1, x2, x3, x4, x5]
+
+
+# def _devviz():
+#     import sys, ubelt
+#     sys.path.append(ubelt.expandpath('~/code/watch/geowatch_tpl/submodules/loss-of-plasticity'))
+#     sys.path.append(ubelt.expandpath('~/code/watch/geowatch_tpl/submodules/torchview'))
+#     from lop.algos.gen_and_test import *  # NOQA
+
+#     net = ConvNet()
+#     input_data = torch.rand(1, 3, 32, 32)
+#     net.predict(input_data)
+
+#     meta = MetaNetwork(net)
+#     meta._build()
+#     meta.trace(input_data=input_data)
