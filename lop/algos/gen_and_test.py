@@ -528,37 +528,35 @@ class GenerateAndTest(object):
                     curr_bias_state = self.opt.state[layer.bias]
                     next_weight_state = self.opt.state[next_layer.weight]
 
-                    import xdev
-                    with xdev.embed_on_exception_context:
-                        if 'exp_avg' in curr_weight_state:
-                            curr_weight_state['exp_avg'][in_feat_idx, :] = 0.0
-                        if 'exp_avg_sq' in curr_weight_state:
-                            curr_weight_state['exp_avg_sq'][in_feat_idx, :] = 0.0
-                        if 'step' in curr_weight_state:
-                            try:
-                                curr_weight_state['step'][in_feat_idx] = 0
-                            except Exception:
-                                curr_weight_state['step'].zero_()
+                    if 'exp_avg' in curr_weight_state:
+                        curr_weight_state['exp_avg'][in_feat_idx, :] = 0.0
+                    if 'exp_avg_sq' in curr_weight_state:
+                        curr_weight_state['exp_avg_sq'][in_feat_idx, :] = 0.0
+                    if 'step' in curr_weight_state:
+                        try:
+                            curr_weight_state['step'][in_feat_idx] = 0
+                        except Exception:
+                            curr_weight_state['step'].zero_()
 
-                        if 'exp_avg' in curr_bias_state:
-                            curr_bias_state['exp_avg'][in_feat_idx] = 0.0
-                        if 'exp_avg_sq' in curr_bias_state:
-                            curr_bias_state['exp_avg_sq'][in_feat_idx] = 0.0
-                        if 'step' in curr_bias_state:
-                            try:
-                                curr_bias_state['step'][in_feat_idx] = 0
-                            except Exception:
-                                curr_bias_state['step'].zero_()
+                    if 'exp_avg' in curr_bias_state:
+                        curr_bias_state['exp_avg'][in_feat_idx] = 0.0
+                    if 'exp_avg_sq' in curr_bias_state:
+                        curr_bias_state['exp_avg_sq'][in_feat_idx] = 0.0
+                    if 'step' in curr_bias_state:
+                        try:
+                            curr_bias_state['step'][in_feat_idx] = 0
+                        except Exception:
+                            curr_bias_state['step'].zero_()
 
-                        if 'exp_avg' in next_weight_state:
-                            next_weight_state['exp_avg'][:, out_feat_idx] = 0.0
-                        if 'exp_avg_sq' in next_weight_state:
-                            next_weight_state['exp_avg_sq'][:, out_feat_idx] = 0.0
-                        if 'step' in next_weight_state:
-                            try:
-                                next_weight_state['step'][:, out_feat_idx] = 0
-                            except Exception:
-                                next_weight_state['step'].zero_()
+                    if 'exp_avg' in next_weight_state:
+                        next_weight_state['exp_avg'][:, out_feat_idx] = 0.0
+                    if 'exp_avg_sq' in next_weight_state:
+                        next_weight_state['exp_avg_sq'][:, out_feat_idx] = 0.0
+                    if 'step' in next_weight_state:
+                        try:
+                            next_weight_state['step'][:, out_feat_idx] = 0
+                        except Exception:
+                            next_weight_state['step'].zero_()
 
     def gen_and_test(self):
         """
